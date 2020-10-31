@@ -1,0 +1,380 @@
+---
+title: "Week 10 Assignment - Sentiment Analysis"
+author: "Stefano Biguzzi"
+date: "10/28/2020"
+output:
+  html_document:
+    highlight: pygments
+    theme: cerulean
+    toc: yes
+    toc_float: yes
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=T, warning=F, message=F)
+```
+
+# Loading Libraries
+```{r}
+library(tidyverse)
+library(tidytext)
+library(janeaustenr)
+library(stringr)
+library(wordcloud)
+library(reshape2)
+library(gutenbergr)
+```
+
+# Part I - Sentiment analysis with tidy data
+The following section is code from [Chapter 2](https://www.tidytextmining.com/sentiment.html) of **Text Mining with R: A Tidy Approach** by *Julia Silge and David Robinson*^[Silge, Julia, and David Robinson. Text Mining with R: A Tidy Approach. , 2017. Internet resource.]
+
+## 2.1 The `sentiments` dataset
+```{r}
+get_sentiments("afinn")
+```
+```{r}
+get_sentiments("bing")
+```
+```{r}
+get_sentiments("nrc")
+```
+
+## 2.2 Sentiment analysis with inner join
+```{r}
+tidy_books <- austen_books() %>%
+  group_by(book) %>%
+  mutate(linenumber = row_number(),
+         chapter = cumsum(str_detect(text, regex("^chapter [\\divxlc]",
+                                                 ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+```
+```{r}
+nrc_joy <- get_sentiments("nrc") %>% 
+  filter(sentiment == "joy")
+
+tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy) %>%
+  count(word, sort = TRUE)
+```
+
+```{r}
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+```
+```{r}
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+```
+
+## 2.3 Comparing the three sentiment dictionaries
+
+```{r}
+pride_prejudice <- tidy_books %>% 
+  filter(book == "Pride & Prejudice")
+
+pride_prejudice
+```
+
+```{r}
+afinn <- pride_prejudice %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = linenumber %/% 80) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+bing_and_nrc <- bind_rows(pride_prejudice %>%
+                            inner_join(get_sentiments("bing")) %>%
+                            mutate(method = "Bing et al."),
+                          pride_prejudice %>% 
+                            inner_join(get_sentiments("nrc") %>% 
+                                         filter(sentiment %in% c("positive",
+                                                                 "negative"))) %>%
+                            mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+```
+
+```{r}
+bind_rows(afinn,
+          bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+```
+```{r}
+get_sentiments("nrc") %>% 
+  filter(sentiment %in% c("positive", 
+                          "negative")) %>% 
+  count(sentiment)
+
+get_sentiments("bing") %>% 
+  count(sentiment)
+```
+
+## 2.4 Most common positive and negative words
+```{r}
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+bing_word_counts
+```
+
+```{r}
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) +
+  coord_flip()
+```
+
+```{r}
+custom_stop_words <- bind_rows(tibble(word = c("miss"),
+                                      lexicon = c("custom")),
+                               stop_words)
+
+custom_stop_words
+```
+
+## 2.5 Wordclouds
+```{r}
+tidy_books %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+```
+```{r}
+tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 100)
+```
+
+## 2.6 Looking at units beyond just words
+```{r}
+PandP_sentences <- tibble(text = prideprejudice) %>% 
+  unnest_tokens(sentence, text, token = "sentences")
+
+PandP_sentences$sentence[2]
+```
+```{r}
+austen_chapters <- austen_books() %>%
+  group_by(book) %>%
+  unnest_tokens(chapter, text, token = "regex", 
+                pattern = "Chapter|CHAPTER [\\dIVXLC]") %>%
+  ungroup()
+
+austen_chapters %>% 
+  group_by(book) %>% 
+  summarise(chapters = n())
+```
+```{r}
+bingnegative <- get_sentiments("bing") %>% 
+  filter(sentiment == "negative")
+
+wordcounts <- tidy_books %>%
+  group_by(book, chapter) %>%
+  summarize(words = n())
+
+tidy_books %>%
+  semi_join(bingnegative) %>%
+  group_by(book, chapter) %>%
+  summarize(negativewords = n()) %>%
+  left_join(wordcounts, by = c("book", "chapter")) %>%
+  mutate(ratio = negativewords/words) %>%
+  filter(chapter != 0) %>%
+  top_n(1) %>%
+  ungroup()
+```
+
+# Part II - Jane Austen vs Jules Verne
+In this part I want to see if Jules Verne was a more positive or negative writer than Jane Austen. To do this I will look at the same analysis that was done in Chapter 2 of ***Text Mining with R*** but substitute the authors. I also want to see if there is a difference in using the `loughran` lexicon instead of one of the lexicons used in chapter two.
+
+## Get the top 6 works of Jules Verne^[Selected from the following website: [Top 10 Books by Jules Verne](https://digbooks.net/fiction/science-fiction/top-10-books-jules-verne)] and a new lexicon
+```{r}
+#Jules Verne works
+julesverne <- gutenberg_download(c(164,103,18857,3526,1268,2083))
+
+#Verne metadata
+verne_metadata <- gutenberg_metadata[
+    which(gutenberg_metadata$gutenberg_id %in% c(164,103,18857,3526,1268,2083)),
+    c("gutenberg_id","title")]
+
+#Adding book to title to each jules verne work
+verne_books <- merge(julesverne,verne_metadata,by="gutenberg_id")
+
+#Rename title to book
+verne_books <- rename(verne_books,c("book" = "title"))
+
+#New lexicon
+loughran_sent <- get_sentiments("loughran") %>%
+  filter(sentiment %in% c("positive","negative"))
+```
+
+## Tidy the Verne library and only select the top six books
+```{r}
+#Creating the tidy jules verne data set
+tidy_verne <- verne_books[,c("text","book")] %>%
+  group_by(book) %>%
+  mutate(linenumber = row_number(),
+         chapter = cumsum(
+           str_detect(text, regex("^chapter [\\divxlc]", ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+
+# Updating titles for three books
+tidy_verne$book <-
+  gsub("In Search of the Castaways;.*","In Search of the Castaways",tidy_verne$book)
+tidy_verne$book <- gsub("Five Weeks in a Balloon.*","Five Weeks in a Balloon",tidy_verne$book)
+tidy_verne$book <- gsub("Twenty Thousand Leagues.*","Twenty Thousand Leagues",tidy_verne$book)
+```
+
+## Comparing lexicons using a Verne novel
+```{r}
+twenty_leagues <- tidy_verne %>%
+  filter(book == "Twenty Thousand Leagues")
+
+afinn2 <- twenty_leagues %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(index = linenumber %/% 80) %>%
+  summarise(sentiment = sum(value)) %>%
+  mutate(method = "AFINN")
+
+bing_and_nrc2 <-
+  bind_rows(
+    twenty_leagues %>%
+      inner_join(get_sentiments("bing")) %>%
+      mutate(method = "Bing et al."),
+    twenty_leagues %>%
+      inner_join(get_sentiments("nrc") %>%
+                   filter(sentiment %in% c("positive","negative"))) %>%
+      mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+loughran <- twenty_leagues %>%
+  inner_join(loughran_sent) %>%
+  mutate(method = "Loughran-McDonald") %>%
+  count(method,index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive-negative)
+```
+```{r, echo=F,fig.show='asis'}
+bind_rows(
+  afinn2,
+  bing_and_nrc2,
+  loughran
+) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+```
+
+
+## Comparing Vernes to Austen book sentiments using new lexicon
+Because the new lexicon seems to be very negative, using it in addition to a lexicon like NRC which seems to be very positive might be helpful.
+```{r}
+#Combine NRC and loughan
+loughran_nrc <- rbind(
+  get_sentiments("nrc") %>%
+    filter(sentiment %in% c("positive","negative")),
+  loughran_sent)
+
+#Remove duplicate rows
+loughran_nrc <- loughran_nrc %>%
+  distinct()
+```
+```{r}
+# Adding the bing sentiment to verne
+jules_verne_sentiment <- tidy_verne %>%
+  anti_join(stop_words) %>%
+  inner_join(loughran_nrc) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+```
+```{r, echo=F, fig.show="asis"}
+#Create new austen sentiment without miss
+jane_austen_sentiment_2 <- tidy_books %>%
+  anti_join(custom_stop_words) %>%
+  inner_join(loughran_nrc) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+#Comparing sentiment by book for verne and austen
+jane_plot <- ggplot(jane_austen_sentiment_2,aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  ggtitle("Austen Plots") +
+  facet_wrap(~book, ncol = 3, scales = "free_x")
+
+verne_plot <- ggplot(jules_verne_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  ggtitle("Verne Plots") +
+  facet_wrap(~book, ncol = 3, scales = "free_x")
+
+jane_plot + theme_bw()
+verne_plot + theme_bw()
+```
+
+When comparing the Austen sentiment plots and the Verne sentiment plots by book, we see that the Verne books seem to be more negative than the Austen books. If we dig deeper and use the sentiment column we can get a sense of the negative and positive sentiments in the book by assigning a value from -47 to 62 for every 80 lines based on the difference between number of positive and number of negative words per 80 lines.
+
+```{r}
+#Create combined verne-austen loughran data frame
+verne_austen_sentiment <- rbind(
+    jules_verne_sentiment %>%
+      mutate(author="Jules Verne"),
+    jane_austen_sentiment_2 %>%
+      mutate(author="Jane Austen"))
+```
+Below we can see that the assigned values for Jane Austen novels are generally positive while Jules Verne novels are generally negative. Additionally, on average every 80 lines of a Jane Austen novel holds a positive sentiment of 17.9 while Jules Verne's novels holds a positive sentiment of 4.22.
+
+```{r, echo=F, fig.show='asis'}
+#Create frame for mean
+verne_austen_mean <- verne_austen_sentiment %>%
+  group_by(author) %>%
+  mutate(author_mean_sent = mean(sentiment))
+
+#Plot
+verne_austen_sentiment %>%
+  group_by(author,book) %>%
+  summarise(mean_sentiment = mean(sentiment)) %>%
+  ggplot(aes(reorder(book,-mean_sentiment),mean_sentiment,fill = author)) +
+  geom_bar(stat = 'identity',show.legend = FALSE) +
+  geom_text(aes(label = round(mean_sentiment,2)),vjust=-0.25) +
+  geom_hline(data=verne_austen_mean, aes(yintercept=author_mean_sent),
+             color="#8d99ae", linetype="longdash") +
+  scale_y_continuous(expand = expansion(mult = c(0,.1))) +
+  xlab("Book title") +
+  ylab("Mean sentiment score") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  facet_wrap(~author,scales = "free_x")
+```
+
+## Conclusion
+When using the *Loughran-McDonald* lexicon to compare Jane Austin novels with Jules Verne novels, we see that Jules Verne was much more negative in his stories. While both authors showed an average positive sentiment per everu 80 lines, Jane Austen's was about 4 times more positive than Jules Verne's. Is this something to do with the genre they wrote in. Jules Verne is known for his science-fiction / adventure novels, while Jane Austen is known for her romantic novels. I don't believe that the protagonist in Jane Austen's novels went through less negative feelings than protagonists in Jules Verne's novels. That would be a grave simplification of each genre and each author. It's possible that the sentiment of authors during the late 19th century was different than those in the late 18th century. To answer why these authors used different sentiments throughout their novels would require more data and research.
+
+***
+
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 0;"></div>
